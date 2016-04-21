@@ -1,0 +1,282 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>
+    
+  结合init源码剖析Android root提权漏洞（CVE-2010-EASY） - potatoooooo
+  
+
+  </title>
+  <meta name="author" content="">
+  <meta name="description" content="">
+
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  
+  <link href="asset/css/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="atom.xml" rel="alternate" title="potatoooooo" type="application/atom+xml">
+  <script src="asset/js/modernizr-2.0.js"></script>
+  <script src="asset/js/jquery.min.js"></script>
+  <script src="asset/highlightjs/highlight.pack.js"></script>
+  <link href="asset/highlightjs/styles/solarized_light.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <script>hljs.initHighlightingOnLoad();</script>
+
+  <style type="text/css">
+  .cat-children-p{ padding: 6px 0px;}
+  .hljs{background: none;}
+  </style>
+  <script type="text/javascript">
+  var isAddSildbar = true;
+  </script>
+  <script src="asset/js/octopress.js" type="text/javascript"></script>
+</head>
+<script type="text/javascript">
+//链接新开窗口
+function addBlankTargetForLinks () {
+  $('a[href^="http"]').each(function(){
+      $(this).attr('target', '_blank');
+  });
+}
+$(document).ready(function(event) {
+  addBlankTargetForLinks();
+});
+</script>
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="index.html">potatoooooo</a></h1>
+  
+    <h2></h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="http://google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:baozu.us" />
+    <input class="search" type="text" name="q" results="0" placeholder="Search"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="index.html">Home</a></li>
+  <li><a href="archives.html">Archives</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content"> 
+<div>
+	<article class="hentry" role="article">
+	<header>
+			  	<h1 class="entry-title">结合init源码剖析Android root提权漏洞（CVE-2010-EASY）</h1>
+				<p class="meta"><time datetime="2011-08-01T00:23:53+08:00" pubdate data-updated="true">2011/8/1</time></p>
+			 </header>
+		  	<div class="entry-content">
+			  	<p>这篇文章是上一篇博客的后续分析，主要介绍向init进程发送热拔插信息后init进程的处理流程。</p>
+
+<p>首先我们来了解一个数据结构，uevent，如下:</p>
+
+<pre><code>struct uevent {                                                                                
+    const char *action;                                                                        
+    const char *path;                                                                          
+    const char *subsystem;                                                                     
+    const char *firmware;                                                                      
+    int major;                                                                                 
+    int minor;                                                                                 
+};  
+</code></pre>
+
+<p> <br/>
+内核收到的信息如下:</p>
+
+<pre><code>ACTION=add
+DEVPATH=/../data/local/tmp
+SUBSYSTEM=firmware
+FIRMWARE=../../../data/local/tmp/hotplug
+</code></pre>
+
+<p> 通过如下函数parse_event进行解析:</p>
+
+<pre><code>static void parse_event(const char *msg, struct uevent *uevent) 
+{
+ 
+    while(*msg) {                                                                              
+        if(!strncmp(msg, &quot;ACTION=&quot;, 7)) {                                                      
+            msg += 7;                                                                          
+            uevent-&gt;action = msg;                                                              
+        } else if(!strncmp(msg, &quot;DEVPATH=&quot;, 8)) {                                              
+            msg += 8;                                                                          
+            uevent-&gt;path = msg;                                                                
+        } else if(!strncmp(msg, &quot;SUBSYSTEM=&quot;, 10)) {                                           
+            msg += 10;                                                                         
+            uevent-&gt;subsystem = msg;                                                           
+        } else if(!strncmp(msg, &quot;FIRMWARE=&quot;, 9)) {                                             
+            msg += 9;                                                                          
+            uevent-&gt;firmware = msg;                                                            
+        } else if(!strncmp(msg, &quot;MAJOR=&quot;, 6)) {                                                
+            msg += 6;                                                                          
+            uevent-&gt;major = atoi(msg);                                                         
+        } else if(!strncmp(msg, &quot;MINOR=&quot;, 6)) {                                                
+            msg += 6;                                                                          
+            uevent-&gt;minor = atoi(msg);                                                         
+        }
+         while(*msg++)；
+    }           
+}
+</code></pre>
+
+<p>经过解析之后，uevent的结构为:</p>
+
+<pre><code>Action=&quot;add&quot;
+path=&quot;/../data/local/tmp&quot;
+subsystem=&quot;firmware&quot;
+firmware=&quot;../../../data/local/tmp/hotplug&quot;
+</code></pre>
+
+<p> <br/>
+之后来到处理firmware的核心函数:</p>
+
+<pre><code>static void process_firmware_event(struct uevent *uevent)
+{
+    l = asprintf(&amp;root, SYSFS_PREFIX&quot;%s/&quot;, uevent-&gt;path);
+    //root为/sys/../data/local/tmp/=/data/local/tmp/
+    
+    l = asprintf(&amp;loading, &quot;%sloading&quot;, root);
+    //loading为/data/local/tmp/loading
+    
+    l = asprintf(&amp;data, &quot;%sdata&quot;, root);
+    //data为/data/local/tmp/data   其内容为指向/proc/sys/kernel/hotplug的符号链接
+    
+    l = asprintf(&amp;file, FIRMWARE_DIR&quot;/%s&quot;, uevent-&gt;firmware);
+    //file为/etc/firmware/../../../data/local/tmp/hotplug=/data/local/tmp/hotplug
+    
+    loading_fd = open(loading, O_WRONLY);
+    
+    data_fd = open(data, O_WRONLY); 
+    
+    fw_fd = open(file, O_RDONLY);
+    
+    load_firmware(fw_fd, loading_fd, data_fd)；
+}
+ 
+最后来到load_firmware函数,把hotplug中的数据写到/proc/sys/kernel/hotplug中 其内容变为/data/local/tmp/exploid
+
+static int load_firmware(int fw_fd, int loading_fd, int data_fd)
+{
+    while (len_to_copy &gt; 0) {
+        char buf[PAGE_SIZE];
+ 
+ 
+        nr = read(fw_fd, buf, sizeof(buf));
+                                                                         
+        len_to_copy -= nr;                                                                     
+        while (nr &gt; 0) {                                                                       
+                                                                                               
+            nw = write(data_fd, buf + nw, nr);                                                 
+ 
+            nr -= nw;
+        }
+    }
+}
+</code></pre>
+
+<p> <br/>
+最后/proc/sys/kernel/hotplug中写入了我们的恶意程序，只要再次受到如wifi打开、usb插入等热拔插信息，内核就会以root权限加载我们的程序再一次执行，从而达到提权的目的。</p>
+
+			</div>
+
+		
+	  
+		<footer>
+		 <p class="meta">
+
+			
+			<span class="categories">
+			 
+			</span>
+		    </p>
+		    <p class="meta">
+		      
+		 </p>
+	    
+		<div class="sharing">
+			
+		</div>
+
+	    <p class="meta">
+	    
+	        <a class="basic-alignment left" href="14612561818311.html" 
+	        title="Previous Post: Android提权漏洞CVE-2010-EASY修复">&laquo; Android提权漏洞CVE-2010-EASY修复</a>
+	    
+	    
+	        <a class="basic-alignment right" href="14612554261853.html" 
+	        title="Next Post: Android root源代码剖析(基于CVE-2010-EASY)">Android root源代码剖析(基于CVE-2010-EASY) &raquo;</a>
+	    
+	    </p>
+	  </footer>
+	</article>
+</div>
+ <aside class="sidebar"> 
+
+	<section>
+	  <h1>Categories</h1>
+	  <ul id="recent_posts">
+	  
+	        
+	      </li>
+	   
+	  </ul>
+	</section>
+	<section>
+	  <h1>Recent Posts</h1>
+	  <ul id="recent_posts">
+	  
+	      
+		      <li class="post">
+		        <a href="14612489355704.html"></a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612561818311.html">Android提权漏洞CVE-2010-EASY修复</a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612558333136.html">结合init源码剖析Android root提权漏洞（CVE-2010-EASY）</a>
+		      </li>
+	     
+	  
+	      
+		      <li class="post">
+		        <a href="14612554261853.html">Android root源代码剖析(基于CVE-2010-EASY)</a>
+		      </li>
+	     
+	   
+	  </ul>
+	</section>
+	
+</aside> </div></div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2014 -  -
+  <span class="credit">Powered by <a target="_blank" href="http://www.mweb.im">MWeb</a> &nbsp;&nbsp; Theme by <a href="http://octopress.org">Octopress</a></span>
+</p>
+
+</footer>
+<script src="asset/chart/all-min.js"></script><script type="text/javascript">$(function(){    var mwebii=0;    var mwebChartEleId = 'mweb-chart-ele-';    $('pre>code').each(function(){        mwebii++;        var eleiid = mwebChartEleId+mwebii;        if($(this).hasClass('language-sequence')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"><div>').insertAfter(ele);            ele.hide();            var diagram = Diagram.parse($(this).text());            diagram.drawSVG(eleiid,{theme: 'simple'});        }else if($(this).hasClass('language-flow')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"><div>').insertAfter(ele);            ele.hide();            var diagram = flowchart.parse($(this).text());            diagram.drawSVG(eleiid);        }    });});</script>
+<script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({TeX: { equationNumbers: { autoNumber: "AMS" } }});</script>
+
+</body>
+</html>

